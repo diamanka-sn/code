@@ -276,3 +276,95 @@ def plot_temperature_slwc_histogram(orbites: list,
     plt.show()
 
     return y
+
+
+
+def density(orbites: list, bins_x=50, bins_y=50, xlim=(0, 10),
+            ylim=(-45, 0), normalize=True,
+            cmap="rainbow", vmin=None, vmax=None):
+
+    all_slwp = []
+    all_temp = []
+
+    for orbit_data in orbites:
+        height = orbit_data["height"]
+        lwc    = orbit_data["lwc_plot"]
+        lwp    = orbit_data["lwp_plot"]
+        temp   = orbit_data["temp_c"]
+
+        idx_valid = np.where(np.asarray(lwp) > 0)[0]
+
+        for idx in idx_valid:
+            i = int(idx)
+
+            altitude_ref = height[i, ::-1]
+            lwc_profile  = lwc[i, ::-1]
+            temp_profile = temp[i, ::-1]
+
+            lwc_profile  = np.ma.masked_where((lwc_profile < 0) | (lwc_profile < -9000), lwc_profile)
+            temp_profile = np.ma.masked_where(temp_profile < -200, temp_profile)
+
+            slwc_profile = np.where(temp_profile <= 0, lwc_profile, np.nan)
+            slwc_profile = np.ma.masked_where(slwc_profile < -900, slwc_profile)
+
+            valid        = ~np.isnan(altitude_ref)
+            altitude_ref = altitude_ref[valid]
+            lwc_profile  = lwc_profile[valid]
+            temp_profile = temp_profile[valid]
+            slwc_profile = slwc_profile[valid]
+
+            slwp_i = float(np.nansum(np.ma.filled(slwc_profile, 0.0)) * 100)
+            if slwp_i <= 0:
+                continue
+
+            # Garder chaque niveau avec SLWC > 0 et sa température réelle
+            slwc_values = np.ma.filled(slwc_profile, 0.0)
+            temp_filled = np.ma.filled(temp_profile, np.nan)
+            mask_slwc   = slwc_values > 0
+
+            for t_level in temp_filled[mask_slwc]:
+                if not np.isnan(t_level):
+                    all_slwp.append(slwp_i)
+                    all_temp.append(t_level)
+
+    x = np.array(all_slwp)
+    y = np.array(all_temp)
+
+    print(f"Total niveaux SLWC valides : {len(x)}")
+    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
+    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
+
+    if len(x) == 0:
+        raise ValueError("Aucun niveau valide trouvé.")
+
+    # Histogramme 2D
+    y_range = ylim if ylim is not None else [y.min(), y.max()]
+    H, xedges, yedges = np.histogram2d(x, y,
+                                        bins=[bins_x, bins_y],
+                                        range=[xlim, y_range])
+    if normalize and H.max() > 0:
+        H = H / H.max()
+    H_plot = np.where(H.T > 0, H.T, np.nan)
+
+    # Figure
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cmap_obj = plt.get_cmap(cmap)
+    lo   = vmin if vmin is not None else 0
+    hi   = vmax if vmax is not None else (1 if normalize else np.nanmax(H_plot))
+    norm = mcolors.Normalize(vmin=lo, vmax=hi)
+    pc   = ax.pcolormesh(xedges, yedges, H_plot, cmap=cmap_obj,
+                         norm=norm, shading="auto")
+    cbar = plt.colorbar(pc, ax=ax)
+    cbar.set_label("Probability density (%)" if normalize else "Densité", fontsize=10)
+
+    ax.set_xlabel("SLWP (g/m²)", fontsize=11)
+    ax.set_ylabel("Température (°C)", fontsize=11)
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_title(f"SLWP vs Température — {len(orbites)} orbites\n"
+                 f"N={len(x)} niveaux SLWC", fontsize=11)
+
+    plt.tight_layout()
+    plt.show()
+
+    return x, y
