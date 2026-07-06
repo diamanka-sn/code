@@ -169,3 +169,110 @@ def plot_slwp_vs_temperature_full(orbites: list,
     plt.tight_layout()
     plt.savefig("slwp_vs_temperature_full.png", dpi=150)
     plt.show()
+
+
+    # Masque continental (calculé une seule fois avant la boucle)
+def plot_temperature_slwc_histogram(orbites: list,
+                                     xlim=(-50, 0),
+                                     bins=50,
+                                     land_only=True,
+                                     land_resolution="50m",
+                                     title=None):
+
+    # Masque continental (calculé une seule fois avant la boucle)
+    if land_only:
+        import cartopy.io.shapereader as shpreader
+        from shapely.ops import unary_union
+        from shapely import contains_xy
+
+        land_shp  = shpreader.natural_earth(resolution=land_resolution,
+                                             category="physical", name="land")
+        land_geom = unary_union(list(shpreader.Reader(land_shp).geometries()))
+
+    all_temp = []
+
+    for orbit_data in orbites:
+        height = orbit_data["height"]
+        lwc    = orbit_data["lwc_plot"]
+        lwp    = orbit_data["lwp_plot"]
+        temp   = orbit_data["temp_c"]
+        lat    = np.asarray(orbit_data["lat"], dtype=float)
+        lon    = np.asarray(orbit_data["lon"], dtype=float)
+
+        # Masque continental pour cette orbite
+        if land_only:
+            is_land   = contains_xy(land_geom, lon, lat)
+            idx_valid = np.where((np.asarray(lwp) > 0) & is_land)[0]
+        else:
+            idx_valid = np.where(np.asarray(lwp) > 0)[0]
+
+        for idx in idx_valid:
+            i = int(idx)
+
+            altitude_ref = height[i, ::-1]
+            lwc_profile  = lwc[i, ::-1]
+            temp_profile = temp[i, ::-1]
+
+            lwc_profile  = np.ma.masked_where((lwc_profile < 0) | (lwc_profile < -9000), lwc_profile)
+            temp_profile = np.ma.masked_where(temp_profile < -200, temp_profile)
+
+            slwc_profile = np.where(temp_profile <= 0, lwc_profile, np.nan)
+            slwc_profile = np.ma.masked_where(slwc_profile < -900, slwc_profile)
+
+            valid        = ~np.isnan(altitude_ref)
+            altitude_ref = altitude_ref[valid]
+            temp_profile = temp_profile[valid]
+            slwc_profile = slwc_profile[valid]
+
+            slwp_i = float(np.nansum(np.ma.filled(slwc_profile, 0.0)) * 100)
+            if slwp_i <= 0:
+                continue
+
+            slwc_values = np.ma.filled(slwc_profile, 0.0)
+            mask_slwc   = slwc_values > 0
+            if np.sum(mask_slwc) == 0:
+                continue
+
+            temp_filled = np.ma.filled(temp_profile, np.nan)
+            temp_mean_i = float(np.nanmean(temp_filled[mask_slwc]))
+
+            if np.isnan(temp_mean_i):
+                continue
+
+            all_temp.append(temp_mean_i)
+
+    y = np.array(all_temp)
+    print(f"Total pixels SLW valides : {len(y)}")
+    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
+    print(f"Temp moyenne : {np.mean(y):.2f} °C")
+    print(f"Temp médiane : {np.median(y):.2f} °C")
+
+    if len(y) == 0:
+        raise ValueError("Aucun pixel valide trouvé.")
+
+    # Histogramme brut
+    counts, edges = np.histogram(y, bins=bins, range=xlim)
+    centers       = 0.5 * (edges[:-1] + edges[1:])
+
+    # Figure — température en Y, count en X
+    fig, ax = plt.subplots(figsize=(6, 8))
+
+    ax.plot(counts, centers, 'r-', linewidth=2)
+
+    ax.tick_params(top=True, right=True, which="both", direction="in")
+    ax.spines["right"].set_visible(True)
+    ax.spines["top"].set_visible(True)
+    ax.set_ylabel("Mean temperature (°C)", fontsize=11)
+    ax.set_xlabel("Count Number", fontsize=11)
+    ax.set_ylim(xlim)
+    ax.set_xlim(left=0)
+
+    land_label = "continent uniquement" if land_only else "continent + océan"
+    ax.set_title(title or f"Distribution de température des nuages SLW\n"
+                          f"{len(orbites)} orbites | N={len(y)} pixels",
+                 fontsize=11)
+
+    plt.tight_layout()
+    plt.show()
+
+    return y
