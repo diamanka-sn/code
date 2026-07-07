@@ -486,3 +486,33 @@ plot_density_from_file("slwp_temp_levels.npz", elev_max=2000)
 
 # Entre 1000 m et 3000 m
 plot_density_from_file("slwp_temp_levels.npz", elev_min=1000, elev_max=3000) 
+
+
+def add_ricaud_curve(ax, slwp_range=(1.0, 14.0)):
+    """
+    Trace la courbe de Ricaud et al. 2024 pour la température :
+    f2(SLWP) = α + β * ln(SLWP + ΔSLWP)
+    avec α=-33.8, β=6.5, ΔSLWP=0.71
+    et la bande d'incertitude α ± δα
+    """
+    alpha  = -33.8
+    delta_alpha = 1.5
+    beta   = 6.5
+    delta_slwp = 0.71
+
+    slwp_line = np.linspace(slwp_range[0], slwp_range[1], 200)
+
+    # Courbe centrale
+    f2        = alpha + beta * np.log(slwp_line + delta_slwp)
+
+    # Bandes d'incertitude
+    f2_upper  = (alpha + delta_alpha) + beta * np.log(slwp_line + delta_slwp)
+    f2_lower  = (alpha - delta_alpha) + beta * np.log(slwp_line + delta_slwp)
+
+    ax.plot(slwp_line, f2, 'b-', linewidth=2,
+            label=f'Ricaud et al. 2024\nf₂(SLWP) = {alpha} + {beta}·ln(SLWP + {delta_slwp})')
+    ax.plot(slwp_line, f2_upper, 'b--', linewidth=1, alpha=0.7)
+    ax.plot(slwp_line, f2_lower, 'b--', linewidth=1, alpha=0.7)
+    ax.fill_between(slwp_line, f2_lower, f2_upper, alpha=0.15, color='blue',
+                    label=f'α ± δα = ±{delta_alpha}°C')
+    ax.legend(fontsize=9)
