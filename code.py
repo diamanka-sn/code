@@ -399,3 +399,90 @@ def plot_slwp_histogram_from_file(filepath: str,
 
     plt.tight_layout()
     plt.show()    
+
+def plot_density_from_file(filepath: str,
+                            bins_x=100, bins_y=225,
+                            xlim=(0, 20), ylim=(-45, 0),
+                            cmap="rainbow",
+                            vmin=None, vmax=None,
+                            elev_min=None, elev_max=None):
+
+    # Chargement des données
+    data = np.load(filepath)
+    x    = data["slwp"]
+    y    = data["temp"]
+    elev = data["surface_elevation"]
+
+    # Filtre sur l'élévation
+    mask = np.ones(len(x), dtype=bool)
+    if elev_min is not None:
+        mask &= elev >= elev_min
+    if elev_max is not None:
+        mask &= elev <= elev_max
+
+    x = x[mask]
+    y = y[mask]
+
+    print(f"N niveaux total    : {len(data['slwp'])}")
+    print(f"N niveaux filtrés  : {len(x)}")
+    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
+    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
+
+    if len(x) == 0:
+        raise ValueError("Aucun niveau valide après filtre élévation.")
+
+    # Histogramme 2D
+    y_range = ylim if ylim is not None else [y.min(), y.max()]
+    H, xedges, yedges = np.histogram2d(x, y,
+                                        bins=[bins_x, bins_y],
+                                        range=[xlim, y_range])
+
+    # Vraie densité de probabilité en %
+    if H.sum() > 0:
+        H = H / H.sum() * 100
+
+    H_plot = np.where(H.T > 0, H.T, np.nan)
+
+    # Titre avec info élévation
+    elev_label = ""
+    if elev_min is not None and elev_max is not None:
+        elev_label = f"élévation {elev_min} m à {elev_max} m"
+    elif elev_min is not None:
+        elev_label = f"élévation > {elev_min} m"
+    elif elev_max is not None:
+        elev_label = f"élévation < {elev_max} m"
+    else:
+        elev_label = "toutes élévations"
+
+    # Figure
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cmap_obj = plt.get_cmap(cmap)
+    lo   = vmin if vmin is not None else 0
+    hi   = vmax if vmax is not None else np.nanmax(H_plot)
+    norm = mcolors.Normalize(vmin=lo, vmax=hi)
+    pc   = ax.pcolormesh(xedges, yedges, H_plot, cmap=cmap_obj,
+                         norm=norm, shading="auto")
+    cbar = plt.colorbar(pc, ax=ax)
+    cbar.set_label("Probability density (%)", fontsize=10)
+
+    ax.set_xlabel("SLWP (g/m²)", fontsize=11)
+    ax.set_ylabel("Température (°C)", fontsize=11)
+    ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
+    ax.set_title(f"SLWP vs Température | {elev_label}\nN={len(x)} niveaux SLWC",
+                 fontsize=11)
+
+    plt.tight_layout()
+    plt.show()
+
+# Toutes élévations
+plot_density_from_file("slwp_temp_levels.npz")
+
+# Haute altitude uniquement (> 2000 m)
+plot_density_from_file("slwp_temp_levels.npz", elev_min=2000)
+
+# Basse altitude uniquement (< 2000 m)
+plot_density_from_file("slwp_temp_levels.npz", elev_max=2000)
+
+# Entre 1000 m et 3000 m
+plot_density_from_file("slwp_temp_levels.npz", elev_min=1000, elev_max=3000) 
