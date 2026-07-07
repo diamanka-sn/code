@@ -368,3 +368,34 @@ def density(orbites: list, bins_x=50, bins_y=50, xlim=(0, 10),
     plt.show()
 
     return x, y
+
+def plot_slwp_histogram_from_file(filepath: str,
+                                   bins=50,
+                                   xlim=(0, 20),
+                                   title=None):
+
+    data = np.load(filepath)
+    x    = data["slwp"]
+
+    print(f"N niveaux : {len(x)}")
+    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
+    print(f"SLWP moyenne : {np.mean(x):.2f} g/m²")
+    print(f"SLWP médiane : {np.median(x):.2f} g/m²")
+
+    counts, edges = np.histogram(x, bins=bins, range=xlim)
+    centers       = 0.5 * (edges[:-1] + edges[1:])
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(centers, counts, 'b-', linewidth=2)
+
+    ax.set_xlabel("SLWP (g/m²)", fontsize=11)
+    ax.set_ylabel("Nombre de pixels", fontsize=11)
+    ax.set_xlim(xlim)
+    ax.set_ylim(bottom=0)
+    ax.tick_params(top=True, right=True, which="both", direction="in")
+    ax.spines["right"].set_visible(True)
+    ax.spines["top"].set_visible(True)
+    ax.set_title(title or f"Distribution du SLWP\nN={len(x)} niveaux SLWC", fontsize=11)
+
+    plt.tight_layout()
+    plt.show()    
