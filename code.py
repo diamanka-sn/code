@@ -94,11 +94,13 @@ class GridAccumulator:
 
     @staticmethod
     def _compute_slwc_slwp(orbit_data: dict) -> dict:
-        """Calcule SLWC (2D), SLWP (1D), temperature_slwc (1D) et cloud_level_slwc (1D).
-        - SLWC = LWC restreint aux niveaux où T <= 0°C
-        - SLWP = intégrale verticale de SLWC par rectangles (dz=100m)
-        - temperature_slwc = température moyenne uniquement là où SLWC > 0
-        - cloud_level_slwc = altitude moyenne des niveaux où SLWC > 0
+        """
+        Calcule SLWC (2D), SLWP (1D), temperature_slwc (1D) et cloud_level_slwc (1D).
+        - SLWC       = LWC restreint aux niveaux où T <= 0°C
+        - SLWP       = intégrale verticale de SLWC par rectangles (dz=100m)
+                       uniquement sur les niveaux avec altitude valide
+        - temperature_slwc  = température moyenne là où SLWC > 0 ET altitude valide
+        - cloud_level_slwc  = altitude moyenne là où SLWC > 0 ET altitude valide
         La température doit être déjà en °C.
         """
         lwc         = orbit_data.get("lwc")
@@ -129,19 +131,27 @@ class GridAccumulator:
         slwc = np.ma.masked_where(slwc < -900, slwc)
         orbit_data["slwc"] = slwc
 
+        # Niveaux avec altitude valide (même logique que slwc_profile[valid])
+        valid_height = ~np.isnan(height_arr)  # (n_pixels, 206)
+
         # SLWP : intégration verticale par rectangles (dz=100m)
+        # uniquement sur les niveaux avec altitude valide
         slwc_filled = np.where(np.ma.getmaskarray(slwc), 0.0, np.ma.filled(slwc, 0.0))
-        slwp = np.nansum(slwc_filled, axis=1) * 100
+        slwc_clean  = np.where(valid_height, slwc_filled, 0.0)
+        slwp        = np.nansum(slwc_clean, axis=1) * 100
         orbit_data["slwp"] = slwp
 
         # temperature_slwc et cloud_level_slwc
+        # uniquement là où SLWC > 0 ET altitude valide
         n_pixels    = slwc_filled.shape[0]
         temp_slwc   = np.full(n_pixels, np.nan)
         cloud_level = np.full(n_pixels, np.nan)
         temp_filled = np.ma.filled(temp_clean, np.nan)
 
         for k in range(n_pixels):
-            mask_slwc = slwc_filled[k, :] > 0
+            valid_k   = valid_height[k, :]                        # altitude valide
+            mask_slwc = (slwc_filled[k, :] > 0) & valid_k        # SLWC > 0 ET altitude valide
+
             if np.sum(mask_slwc) > 0:
                 temp_slwc[k]   = np.nanmean(temp_filled[k, mask_slwc])
                 cloud_level[k] = np.nanmean(height_arr[k, mask_slwc])
