@@ -1,518 +1,393 @@
-def plot_slwp_vs_temperature_full(orbites: list,
-                                   xlim=(0, 15),
-                                   ylim=(-40, -10),
-                                   bins_x=50, bins_y=50,
-                                   bins_lwp=None,
-                                   normalize=True,
-                                   cmap="rainbow"):
+from pathlib import Path
+import numpy as np
+import xarray as xr
 
-    all_slwp = []
-    all_temp = []
+from config import DEFAULT_DLAT, DEFAULT_DLON, GRID_PARAMS_1D, GRID_PARAMS_2D, ALL_PARAMS
 
-    for orbit_data in orbites:
-        height = orbit_data["height"]
-        lwc    = orbit_data["lwc_plot"]
-        lwp    = orbit_data["lwp_plot"]
-        temp   = orbit_data["temp_c"]
-
-        idx_valid = np.where(np.asarray(lwp) > 0)[0]
-
-        for idx in idx_valid:
-            i = int(idx)
-
-            altitude_ref = height[i, ::-1]
-            lwc_profile  = lwc[i, ::-1]
-            temp_profile = temp[i, ::-1]
-
-            lwc_profile  = np.ma.masked_where((lwc_profile < 0) | (lwc_profile < -9000), lwc_profile)
-            temp_profile = np.ma.masked_where(temp_profile < -200, temp_profile)
-
-            slwc_profile = np.where(temp_profile <= 0, lwc_profile, np.nan)
-            slwc_profile = np.ma.masked_where(slwc_profile < -900, slwc_profile)
-
-            valid        = ~np.isnan(altitude_ref)
-            altitude_ref = altitude_ref[valid]
-            lwc_profile  = lwc_profile[valid]
-            temp_profile = temp_profile[valid]
-            slwc_profile = slwc_profile[valid]
-
-            slwp_i = float(np.nansum(np.ma.filled(slwc_profile, 0.0)) * 100)
-            if slwp_i <= 0:
-                continue
-
-            slwc_values = np.ma.filled(slwc_profile, 0.0)
-            mask_slwc   = slwc_values > 0
-            if np.sum(mask_slwc) == 0:
-                continue
-
-            temp_mean_i = float(np.nanmean(np.ma.filled(temp_profile, np.nan)[mask_slwc]))
-            if np.isnan(temp_mean_i):
-                continue
-
-            all_slwp.append(slwp_i)
-            all_temp.append(temp_mean_i)
-
-    x = np.array(all_slwp)
-    y = np.array(all_temp)
-
-    print(f"Total pixels valides : {len(x)}")
-    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
-    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
-
-    # Régression logarithmique
-    from scipy.optimize import curve_fit
-
-    def log_func(x, a, b):
-        return a * np.log(x) + b
-
-    mask_pos = x > 0
-    try:
-        popt, pcov = curve_fit(log_func, x[mask_pos], y[mask_pos])
-        a, b       = popt
-        perr       = np.sqrt(np.diag(pcov))
-        x_line     = np.linspace(x[mask_pos].min(), x[mask_pos].max(), 100)
-        y_line     = log_func(x_line, a, b)
-        y_line_up  = log_func(x_line, a + perr[0], b + perr[1])
-        y_line_dn  = log_func(x_line, a - perr[0], b - perr[1])
-        y_pred     = log_func(x[mask_pos], a, b)
-        ss_res     = np.sum((y[mask_pos] - y_pred) ** 2)
-        ss_tot     = np.sum((y[mask_pos] - np.mean(y[mask_pos])) ** 2)
-        r2         = 1 - ss_res / ss_tot
-        reg_label  = f'T = {a:.2f}·ln(SLWP) + {b:.2f}\nR²={r2:.3f}'
-    except Exception as e:
-        print(f"Régression échouée : {e}")
-        x_line = y_line = y_line_up = y_line_dn = None
-        reg_label = ""
-
-    # Bins de LWP pour le panneau (b)
-    if bins_lwp is None:
-        bins_lwp = np.arange(xlim[0], xlim[1] + 1, 1)
-
-    bin_centers  = 0.5 * (bins_lwp[:-1] + bins_lwp[1:])
-    bin_means    = []
-    bin_stds     = []
-    bin_centers_valid = []
-
-    for k in range(len(bins_lwp) - 1):
-        mask_bin = (x >= bins_lwp[k]) & (x < bins_lwp[k + 1])
-        if np.sum(mask_bin) >= 5:  # au moins 5 points
-            bin_means.append(np.mean(y[mask_bin]))
-            bin_stds.append(np.std(y[mask_bin]))
-            bin_centers_valid.append(bin_centers[k])
-
-    bin_centers_valid = np.array(bin_centers_valid)
-    bin_means         = np.array(bin_means)
-    bin_stds          = np.array(bin_stds)
-
-    # Figure 3 panneaux
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 7),
-                                         sharey=True,
-                                         gridspec_kw={"wspace": 0.05})
-
-    # --- Panneau (a) : densité de probabilité ---
-    y_range  = ylim
-    H, xedges, yedges = np.histogram2d(x, y,
-                                        bins=[bins_x, bins_y],
-                                        range=[xlim, y_range])
-    if normalize and H.max() > 0:
-        H = H / H.max()
-    H_plot = np.where(H.T > 0, H.T, np.nan)
-
-    cmap_obj = plt.get_cmap(cmap)
-    norm     = mcolors.LogNorm(vmin=0.01, vmax=H_plot[~np.isnan(H_plot)].max())
-    pc       = ax1.pcolormesh(xedges, yedges, H_plot, cmap=cmap_obj,
-                               norm=norm, shading="auto")
-    cbar = fig.colorbar(pc, ax=ax1, orientation="vertical", fraction=0.05, pad=0.02)
-    cbar.set_label("PD (%)", fontsize=9)
-    ax1.set_xlabel("SLWP (g/m²)", fontsize=11)
-    ax1.set_ylabel("Température (°C)", fontsize=11)
-    ax1.set_xlim(xlim)
-    ax1.set_ylim(ylim)
-    ax1.set_title("(a) Densité de probabilité", fontsize=11)
-    ax1.axhline(-40, color="grey", linewidth=0.8, linestyle="--")
-    ax1.axhline(0,   color="k",    linewidth=0.8, linestyle="--")
-
-    # --- Panneau (b) : moyenne par bin + régression log ---
-    ax2.errorbar(bin_means, bin_centers_valid,
-                 xerr=bin_stds,
-                 fmt='r*', markersize=8, linewidth=1.2,
-                 ecolor='red', capsize=3, label='Moyenne ± std')
-
-    if x_line is not None:
-        ax2.plot(y_line,    x_line, 'b-',  linewidth=2,   label=reg_label)
-        ax2.plot(y_line_up, x_line, 'b--', linewidth=1, alpha=0.7)
-        ax2.plot(y_line_dn, x_line, 'b--', linewidth=1, alpha=0.7)
-
-    ax2.set_xlabel("SLWP (g/m²)", fontsize=11)
-    ax2.set_xlim(xlim)
-    ax2.set_ylim(ylim)
-    ax2.set_title("(b) Moyenne par bin + régression log", fontsize=11)
-    ax2.axhline(-40, color="grey", linewidth=0.8, linestyle="--")
-    ax2.axhline(0,   color="k",    linewidth=0.8, linestyle="--")
-    ax2.legend(fontsize=8)
-
-    # --- Panneau (c) : histogramme 1D de la température ---
-    temp_bins   = np.linspace(ylim[0], ylim[1], bins_y + 1)
-    temp_counts, temp_edges = np.histogram(y, bins=temp_bins)
-
-    ax3.plot(temp_counts / 1000, 0.5 * (temp_edges[:-1] + temp_edges[1:]),
-             'r-', linewidth=2)
-    ax3.set_xlabel("Count Number x 10³", fontsize=11)
-    ax3.set_xlim(left=0)
-    ax3.set_ylim(ylim)
-    ax3.set_title("(c) Distribution température SLW", fontsize=11)
-    ax3.axhline(-40, color="grey", linewidth=0.8, linestyle="--")
-    ax3.axhline(0,   color="k",    linewidth=0.8, linestyle="--")
-
-    fig.suptitle(f"SLWP vs Température SLW — {len(orbites)} orbites",
-                 fontsize=13, fontweight="bold")
-    plt.tight_layout()
-    plt.savefig("slwp_vs_temperature_full.png", dpi=150)
-    plt.show()
+PARAMS_ALLOW_NEGATIVE = {"temperature", "temperature_slwc"}
+PARAMS_EXCLUDE_ZERO   = {"slwp", "slwc"}
+PARAMS_NO_FILTER      = {"land_water_flag"}
 
 
-    # Masque continental (calculé une seule fois avant la boucle)
-def plot_temperature_slwc_histogram(orbites: list,
-                                     xlim=(-50, 0),
-                                     bins=50,
-                                     land_only=True,
-                                     land_resolution="50m",
-                                     title=None):
+class GridAccumulator:
 
-    # Masque continental (calculé une seule fois avant la boucle)
-    if land_only:
-        import cartopy.io.shapereader as shpreader
-        from shapely.ops import unary_union
-        from shapely import contains_xy
+    def __init__(self,
+                 dlat: float = DEFAULT_DLAT,
+                 dlon: float = DEFAULT_DLON,
+                 lat_range: tuple = (-90.0, 90.0),
+                 lon_range: tuple = (-180.0, 180.0)):
 
-        land_shp  = shpreader.natural_earth(resolution=land_resolution,
-                                             category="physical", name="land")
-        land_geom = unary_union(list(shpreader.Reader(land_shp).geometries()))
+        self.dlat = dlat
+        self.dlon = dlon
 
-    all_temp = []
+        self.lat_bins = np.arange(lat_range[0], lat_range[1] + dlat, dlat)
+        self.lon_bins = np.arange(lon_range[0], lon_range[1] + dlon, dlon)
+        self.n_lat = len(self.lat_bins)
+        self.n_lon = len(self.lon_bins)
 
-    for orbit_data in orbites:
-        height = orbit_data["height"]
-        lwc    = orbit_data["lwc_plot"]
-        lwp    = orbit_data["lwp_plot"]
-        temp   = orbit_data["temp_c"]
-        lat    = np.asarray(orbit_data["lat"], dtype=float)
-        lon    = np.asarray(orbit_data["lon"], dtype=float)
+        self._days: dict[str, dict] = {}
 
-        # Masque continental pour cette orbite
-        if land_only:
-            is_land   = contains_xy(land_geom, lon, lat)
-            idx_valid = np.where((np.asarray(lwp) > 0) & is_land)[0]
+    @property
+    def dates(self) -> list[str]:
+        return sorted(self._days.keys())
+
+    @property
+    def n_orbits(self) -> int:
+        return sum(self._days[d]["_n_orbits"] for d in self._days)
+
+    def n_orbits_range(self, d1: str, d2: str):
+        days_range = [d for d in self.dates if d1 <= d <= d2]
+        if not days_range:
+            raise ValueError(f"Aucun jour en {d1} et {d2}")
+        result = {d: self._days[d]["_n_orbits"] for d in days_range}
+        total = sum(result.values())
+        return total
+
+    def _init_day(self, day_str: str) -> None:
+        shape = (self.n_lat, self.n_lon)
+        self._days[day_str] = {
+            "_n_orbits": 0,
+            **{
+                p: {
+                    "sum":   np.zeros(shape),
+                    "sum2":  np.zeros(shape),
+                    "count": np.zeros(shape, dtype=np.int32),
+                }
+                for p in ALL_PARAMS
+            }
+        }
+
+    def _cell_indices(self, lat_arr, lon_arr):
+        lat = np.asarray(lat_arr, dtype=float)
+        lon = np.asarray(lon_arr, dtype=float)
+        lat_safe = np.where(np.isnan(lat) | np.isinf(lat), self.lat_bins[0], lat)
+        lon_safe = np.where(np.isnan(lon) | np.isinf(lon), self.lon_bins[0], lon)
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            i_lat = np.floor((lat_safe - self.lat_bins[0]) / self.dlat)
+            i_lon = np.floor((lon_safe - self.lon_bins[0]) / self.dlon)
+
+        i_lat = np.nan_to_num(i_lat, nan=0, posinf=0, neginf=0).astype(int)
+        i_lon = np.nan_to_num(i_lon, nan=0, posinf=0, neginf=0).astype(int)
+        i_lat = np.clip(i_lat, 0, self.n_lat - 1)
+        i_lon = np.clip(i_lon, 0, self.n_lon - 1)
+        return i_lat, i_lon
+
+    @staticmethod
+    def _column_mean(arr2d):
+        with np.errstate(all="ignore"):
+            result = np.nanmean(arr2d, axis=1)
+        result[np.all(np.isnan(arr2d), axis=1)] = np.nan
+        return result
+
+    @staticmethod
+    def _dominant_particle(arr2d):
+        n_time = arr2d.shape[0]
+        result = np.zeros(n_time, dtype=float)
+        for i in range(n_time):
+            col = arr2d[i, :]
+            valid = col[(col >= 1) & (col <= 13)]
+            if len(valid) > 0:
+                vals, counts = np.unique(valid, return_counts=True)
+                result[i] = vals[np.argmax(counts)]
+        return result
+
+    @staticmethod
+    def _compute_slwc_slwp(orbit_data: dict) -> dict:
+        """Calcule SLWC (2D), SLWP (1D), temperature_slwc (1D) et cloud_level_slwc (1D).
+        - SLWC = LWC restreint aux niveaux où T <= 0°C
+        - SLWP = intégrale verticale de SLWC par rectangles (dz=100m)
+        - temperature_slwc = température moyenne uniquement là où SLWC > 0
+        - cloud_level_slwc = altitude moyenne des niveaux où SLWC > 0
+        La température doit être déjà en °C.
+        """
+        lwc         = orbit_data.get("lwc")
+        temperature = orbit_data.get("temperature")  # déjà en °C
+        height      = orbit_data.get("height")
+
+        if lwc is None or temperature is None or height is None:
+            return orbit_data
+
+        orbit_data = dict(orbit_data)
+
+        lwc_arr    = np.asarray(lwc, dtype=float)
+        temp_arr   = np.asarray(temperature, dtype=float)
+        height_arr = np.asarray(height, dtype=float)
+
+        # Masquage des fill values du LWC
+        lwc_clean = np.ma.masked_where(
+            (lwc_arr < 0) | (lwc_arr < -9000), lwc_arr
+        )
+
+        # Masquage des fill values de la température (déjà en °C)
+        temp_clean = np.ma.masked_where(
+            (np.isnan(temp_arr)) | (temp_arr < -200), temp_arr
+        )
+
+        # SLWC : LWC restreint à T <= 0°C
+        slwc = np.where(temp_clean <= 0, lwc_clean, np.nan)
+        slwc = np.ma.masked_where(slwc < -900, slwc)
+        orbit_data["slwc"] = slwc
+
+        # SLWP : intégration verticale par rectangles (dz=100m)
+        slwc_filled = np.where(np.ma.getmaskarray(slwc), 0.0, np.ma.filled(slwc, 0.0))
+        slwp = np.nansum(slwc_filled, axis=1) * 100
+        orbit_data["slwp"] = slwp
+
+        # temperature_slwc et cloud_level_slwc
+        n_pixels    = slwc_filled.shape[0]
+        temp_slwc   = np.full(n_pixels, np.nan)
+        cloud_level = np.full(n_pixels, np.nan)
+        temp_filled = np.ma.filled(temp_clean, np.nan)
+
+        for k in range(n_pixels):
+            mask_slwc = slwc_filled[k, :] > 0
+            if np.sum(mask_slwc) > 0:
+                temp_slwc[k]   = np.nanmean(temp_filled[k, mask_slwc])
+                cloud_level[k] = np.nanmean(height_arr[k, mask_slwc])
+
+        orbit_data["temperature_slwc"] = temp_slwc
+        orbit_data["cloud_level_slwc"] = cloud_level
+
+        return orbit_data
+
+    @staticmethod
+    def _clean_values(arr: np.ndarray, param: str) -> np.ndarray:
+        if param in PARAMS_NO_FILTER:
+            return np.where(np.isnan(arr), np.nan, arr)
+        elif param in PARAMS_ALLOW_NEGATIVE:
+            return np.where((np.isnan(arr)) | (arr < -200), np.nan, arr)
+        elif param in PARAMS_EXCLUDE_ZERO:
+            return np.where((arr <= 0) | np.isnan(arr), np.nan, arr)
         else:
-            idx_valid = np.where(np.asarray(lwp) > 0)[0]
+            return np.where(arr < 0, np.nan, arr)
 
-        for idx in idx_valid:
-            i = int(idx)
+    def accumulate(self, orbit_data: dict) -> None:
 
-            altitude_ref = height[i, ::-1]
-            lwc_profile  = lwc[i, ::-1]
-            temp_profile = temp[i, ::-1]
+        t0 = orbit_data.get("start_time")
+        if t0 is None:
+            print("start_time absent orbite ignorée.")
+            return
 
-            lwc_profile  = np.ma.masked_where((lwc_profile < 0) | (lwc_profile < -9000), lwc_profile)
-            temp_profile = np.ma.masked_where(temp_profile < -200, temp_profile)
+        day_str = t0.decode().replace("UTC=", "").replace("Z", "").split("T")[0]
+        print(day_str)
+        if day_str not in self._days:
+            self._init_day(day_str)
 
-            slwc_profile = np.where(temp_profile <= 0, lwc_profile, np.nan)
-            slwc_profile = np.ma.masked_where(slwc_profile < -900, slwc_profile)
+        day = self._days[day_str]
 
-            valid        = ~np.isnan(altitude_ref)
-            altitude_ref = altitude_ref[valid]
-            temp_profile = temp_profile[valid]
-            slwc_profile = slwc_profile[valid]
+        lat = np.asarray(orbit_data["lat"], dtype=float)
+        lon = np.asarray(orbit_data["lon"], dtype=float)
+        i_lat, i_lon = self._cell_indices(lat, lon)
+        invalid = np.isnan(lat) | np.isnan(lon)
 
-            slwp_i = float(np.nansum(np.ma.filled(slwc_profile, 0.0)) * 100)
-            if slwp_i <= 0:
+        # Conversion Kelvin → Celsius
+        orbit_data = dict(orbit_data)
+        if "temperature" in orbit_data:
+            temp = np.asarray(orbit_data["temperature"], dtype=float)
+            temp = np.where(
+                (np.isnan(temp)) | (temp < 150) | (temp > 400),
+                np.nan, temp
+            )
+            temp = temp - 273.15
+            orbit_data["temperature"] = temp
+
+        # Calcul de SLWC / SLWP / temperature_slwc / cloud_level_slwc
+        orbit_data = self._compute_slwc_slwp(orbit_data)
+
+        # Accumulation des variables 1D
+        for param in GRID_PARAMS_1D:
+            raw = orbit_data.get(param)
+            if raw is None:
                 continue
+            arr    = np.asarray(raw, dtype=float)
+            values = self._clean_values(arr, param)
+            values[invalid] = np.nan
+            _add_at(day[param], i_lat, i_lon, values)
 
-            slwc_values = np.ma.filled(slwc_profile, 0.0)
-            mask_slwc   = slwc_values > 0
-            if np.sum(mask_slwc) == 0:
+        # Accumulation des variables 2D
+        for param in GRID_PARAMS_2D:
+            raw = orbit_data.get(param)
+            if raw is None:
                 continue
-
-            temp_filled = np.ma.filled(temp_profile, np.nan)
-            temp_mean_i = float(np.nanmean(temp_filled[mask_slwc]))
-
-            if np.isnan(temp_mean_i):
-                continue
-
-            all_temp.append(temp_mean_i)
-
-    y = np.array(all_temp)
-    print(f"Total pixels SLW valides : {len(y)}")
-    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
-    print(f"Temp moyenne : {np.mean(y):.2f} °C")
-    print(f"Temp médiane : {np.median(y):.2f} °C")
-
-    if len(y) == 0:
-        raise ValueError("Aucun pixel valide trouvé.")
-
-    # Histogramme brut
-    counts, edges = np.histogram(y, bins=bins, range=xlim)
-    centers       = 0.5 * (edges[:-1] + edges[1:])
-
-    # Figure — température en Y, count en X
-    fig, ax = plt.subplots(figsize=(6, 8))
-
-    ax.plot(counts, centers, 'r-', linewidth=2)
-
-    ax.tick_params(top=True, right=True, which="both", direction="in")
-    ax.spines["right"].set_visible(True)
-    ax.spines["top"].set_visible(True)
-    ax.set_ylabel("Mean temperature (°C)", fontsize=11)
-    ax.set_xlabel("Count Number", fontsize=11)
-    ax.set_ylim(xlim)
-    ax.set_xlim(left=0)
-
-    land_label = "continent uniquement" if land_only else "continent + océan"
-    ax.set_title(title or f"Distribution de température des nuages SLW\n"
-                          f"{len(orbites)} orbites | N={len(y)} pixels",
-                 fontsize=11)
-
-    plt.tight_layout()
-    plt.show()
-
-    return y
-
-
-
-def density(orbites: list, bins_x=50, bins_y=50, xlim=(0, 10),
-            ylim=(-45, 0), normalize=True,
-            cmap="rainbow", vmin=None, vmax=None):
-
-    all_slwp = []
-    all_temp = []
-
-    for orbit_data in orbites:
-        height = orbit_data["height"]
-        lwc    = orbit_data["lwc_plot"]
-        lwp    = orbit_data["lwp_plot"]
-        temp   = orbit_data["temp_c"]
-
-        idx_valid = np.where(np.asarray(lwp) > 0)[0]
-
-        for idx in idx_valid:
-            i = int(idx)
-
-            altitude_ref = height[i, ::-1]
-            lwc_profile  = lwc[i, ::-1]
-            temp_profile = temp[i, ::-1]
-
-            lwc_profile  = np.ma.masked_where((lwc_profile < 0) | (lwc_profile < -9000), lwc_profile)
-            temp_profile = np.ma.masked_where(temp_profile < -200, temp_profile)
-
-            slwc_profile = np.where(temp_profile <= 0, lwc_profile, np.nan)
-            slwc_profile = np.ma.masked_where(slwc_profile < -900, slwc_profile)
-
-            valid        = ~np.isnan(altitude_ref)
-            altitude_ref = altitude_ref[valid]
-            lwc_profile  = lwc_profile[valid]
-            temp_profile = temp_profile[valid]
-            slwc_profile = slwc_profile[valid]
-
-            slwp_i = float(np.nansum(np.ma.filled(slwc_profile, 0.0)) * 100)
-            if slwp_i <= 0:
-                continue
-
-            # Garder chaque niveau avec SLWC > 0 et sa température réelle
-            slwc_values = np.ma.filled(slwc_profile, 0.0)
-            temp_filled = np.ma.filled(temp_profile, np.nan)
-            mask_slwc   = slwc_values > 0
-
-            for t_level in temp_filled[mask_slwc]:
-                if not np.isnan(t_level):
-                    all_slwp.append(slwp_i)
-                    all_temp.append(t_level)
-
-    x = np.array(all_slwp)
-    y = np.array(all_temp)
-
-    print(f"Total niveaux SLWC valides : {len(x)}")
-    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
-    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
-
-    if len(x) == 0:
-        raise ValueError("Aucun niveau valide trouvé.")
-
-    # Histogramme 2D
-    y_range = ylim if ylim is not None else [y.min(), y.max()]
-    H, xedges, yedges = np.histogram2d(x, y,
-                                        bins=[bins_x, bins_y],
-                                        range=[xlim, y_range])
-    if normalize and H.max() > 0:
-        H = H / H.max()
-    H_plot = np.where(H.T > 0, H.T, np.nan)
-
-    # Figure
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cmap_obj = plt.get_cmap(cmap)
-    lo   = vmin if vmin is not None else 0
-    hi   = vmax if vmax is not None else (1 if normalize else np.nanmax(H_plot))
-    norm = mcolors.Normalize(vmin=lo, vmax=hi)
-    pc   = ax.pcolormesh(xedges, yedges, H_plot, cmap=cmap_obj,
-                         norm=norm, shading="auto")
-    cbar = plt.colorbar(pc, ax=ax)
-    cbar.set_label("Probability density (%)" if normalize else "Densité", fontsize=10)
-
-    ax.set_xlabel("SLWP (g/m²)", fontsize=11)
-    ax.set_ylabel("Température (°C)", fontsize=11)
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    ax.set_title(f"SLWP vs Température — {len(orbites)} orbites\n"
-                 f"N={len(x)} niveaux SLWC", fontsize=11)
-
-    plt.tight_layout()
-    plt.show()
-
-    return x, y
-
-def plot_slwp_histogram_from_file(filepath: str,
-                                   bins=50,
-                                   xlim=(0, 20),
-                                   title=None):
-
-    data = np.load(filepath)
-    x    = data["slwp"]
-
-    print(f"N niveaux : {len(x)}")
-    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
-    print(f"SLWP moyenne : {np.mean(x):.2f} g/m²")
-    print(f"SLWP médiane : {np.median(x):.2f} g/m²")
-
-    counts, edges = np.histogram(x, bins=bins, range=xlim)
-    centers       = 0.5 * (edges[:-1] + edges[1:])
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(centers, counts, 'b-', linewidth=2)
-
-    ax.set_xlabel("SLWP (g/m²)", fontsize=11)
-    ax.set_ylabel("Nombre de pixels", fontsize=11)
-    ax.set_xlim(xlim)
-    ax.set_ylim(bottom=0)
-    ax.tick_params(top=True, right=True, which="both", direction="in")
-    ax.spines["right"].set_visible(True)
-    ax.spines["top"].set_visible(True)
-    ax.set_title(title or f"Distribution du SLWP\nN={len(x)} niveaux SLWC", fontsize=11)
-
-    plt.tight_layout()
-    plt.show()    
-
-def plot_density_from_file(filepath: str,
-                            bins_x=100, bins_y=225,
-                            xlim=(0, 20), ylim=(-45, 0),
-                            cmap="rainbow",
-                            vmin=None, vmax=None,
-                            elev_min=None, elev_max=None):
-
-    # Chargement des données
-    data = np.load(filepath)
-    x    = data["slwp"]
-    y    = data["temp"]
-    elev = data["surface_elevation"]
-
-    # Filtre sur l'élévation
-    mask = np.ones(len(x), dtype=bool)
-    if elev_min is not None:
-        mask &= elev >= elev_min
-    if elev_max is not None:
-        mask &= elev <= elev_max
-
-    x = x[mask]
-    y = y[mask]
-
-    print(f"N niveaux total    : {len(data['slwp'])}")
-    print(f"N niveaux filtrés  : {len(x)}")
-    print(f"SLWP min/max : {x.min():.4f} / {x.max():.4f} g/m²")
-    print(f"Temp min/max : {y.min():.2f} / {y.max():.2f} °C")
-
-    if len(x) == 0:
-        raise ValueError("Aucun niveau valide après filtre élévation.")
-
-    # Histogramme 2D
-    y_range = ylim if ylim is not None else [y.min(), y.max()]
-    H, xedges, yedges = np.histogram2d(x, y,
-                                        bins=[bins_x, bins_y],
-                                        range=[xlim, y_range])
-
-    # Vraie densité de probabilité en %
-    if H.sum() > 0:
-        H = H / H.sum() * 100
-
-    H_plot = np.where(H.T > 0, H.T, np.nan)
-
-    # Titre avec info élévation
-    elev_label = ""
-    if elev_min is not None and elev_max is not None:
-        elev_label = f"élévation {elev_min} m à {elev_max} m"
-    elif elev_min is not None:
-        elev_label = f"élévation > {elev_min} m"
-    elif elev_max is not None:
-        elev_label = f"élévation < {elev_max} m"
-    else:
-        elev_label = "toutes élévations"
-
-    # Figure
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cmap_obj = plt.get_cmap(cmap)
-    lo   = vmin if vmin is not None else 0
-    hi   = vmax if vmax is not None else np.nanmax(H_plot)
-    norm = mcolors.Normalize(vmin=lo, vmax=hi)
-    pc   = ax.pcolormesh(xedges, yedges, H_plot, cmap=cmap_obj,
-                         norm=norm, shading="auto")
-    cbar = plt.colorbar(pc, ax=ax)
-    cbar.set_label("Probability density (%)", fontsize=10)
-
-    ax.set_xlabel("SLWP (g/m²)", fontsize=11)
-    ax.set_ylabel("Température (°C)", fontsize=11)
-    ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    ax.set_title(f"SLWP vs Température | {elev_label}\nN={len(x)} niveaux SLWC",
-                 fontsize=11)
-
-    plt.tight_layout()
-    plt.show()
-
-# Toutes élévations
-plot_density_from_file("slwp_temp_levels.npz")
-
-# Haute altitude uniquement (> 2000 m)
-plot_density_from_file("slwp_temp_levels.npz", elev_min=2000)
-
-# Basse altitude uniquement (< 2000 m)
-plot_density_from_file("slwp_temp_levels.npz", elev_max=2000)
-
-# Entre 1000 m et 3000 m
-plot_density_from_file("slwp_temp_levels.npz", elev_min=1000, elev_max=3000) 
-
-
-def add_ricaud_curve(ax, slwp_range=(1.0, 14.0)):
-    """
-    Trace la courbe de Ricaud et al. 2024 pour la température :
-    f2(SLWP) = α + β * ln(SLWP + ΔSLWP)
-    avec α=-33.8, β=6.5, ΔSLWP=0.71
-    et la bande d'incertitude α ± δα
-    """
-    alpha  = -33.8
-    delta_alpha = 1.5
-    beta   = 6.5
-    delta_slwp = 0.71
-
-    slwp_line = np.linspace(slwp_range[0], slwp_range[1], 200)
-
-    # Courbe centrale
-    f2        = alpha + beta * np.log(slwp_line + delta_slwp)
-
-    # Bandes d'incertitude
-    f2_upper  = (alpha + delta_alpha) + beta * np.log(slwp_line + delta_slwp)
-    f2_lower  = (alpha - delta_alpha) + beta * np.log(slwp_line + delta_slwp)
-
-    ax.plot(slwp_line, f2, 'b-', linewidth=2,
-            label=f'Ricaud et al. 2024\nf₂(SLWP) = {alpha} + {beta}·ln(SLWP + {delta_slwp})')
-    ax.plot(slwp_line, f2_upper, 'b--', linewidth=1, alpha=0.7)
-    ax.plot(slwp_line, f2_lower, 'b--', linewidth=1, alpha=0.7)
-    ax.fill_between(slwp_line, f2_lower, f2_upper, alpha=0.15, color='blue',
-                    label=f'α ± δα = ±{delta_alpha}°C')
-    ax.legend(fontsize=9)
+            arr = np.asarray(raw, dtype=float)
+            if param == "particle_type":
+                values = self._dominant_particle(arr)
+            else:
+                cleaned = self._clean_values(arr, param)
+                values  = self._column_mean(cleaned)
+            values[invalid] = np.nan
+            _add_at(day[param], i_lat, i_lon, values)
+
+        day["_n_orbits"] += 1
+
+    def mean(self, day: str) -> dict:
+        if day not in self._days:
+            raise KeyError(f"Jour '{day}' absent. Disponibles : {self.dates}")
+        return _compute_mean(self._days[day])
+
+    def std(self, day: str) -> dict:
+        if day not in self._days:
+            raise KeyError(f"Jour '{day}' absent. Disponibles : {self.dates}")
+        return _compute_std(self._days[day])
+
+    def count(self, day: str) -> dict:
+        if day not in self._days:
+            raise KeyError(f"Jour '{day}' absent. Disponibles : {self.dates}")
+        return {p: self._days[day][p]["count"].copy() for p in ALL_PARAMS}
+
+    def mean_range(self, d1: str, d2: str) -> dict:
+        merged = self._merge_days(d1, d2)
+        return _compute_mean(merged)
+
+    def std_range(self, d1: str, d2: str) -> dict:
+        merged = self._merge_days(d1, d2)
+        return _compute_std(merged)
+
+    def count_range(self, d1: str, d2: str) -> dict:
+        merged = self._merge_days(d1, d2)
+        return {p: merged[p]["count"].copy() for p in ALL_PARAMS}
+
+    def _merge_days(self, d1: str, d2: str) -> dict:
+        days_in_range = [d for d in self.dates if d1 <= d <= d2]
+        if not days_in_range:
+            raise ValueError(
+                f"Aucun jour entre {d1} et {d2}. "
+                f"Disponibles : {self.dates[0]} -> {self.dates[-1]}"
+            )
+
+        shape = (self.n_lat, self.n_lon)
+        merged = {
+            p: {
+                "sum":   np.zeros(shape),
+                "sum2":  np.zeros(shape),
+                "count": np.zeros(shape, dtype=np.int32),
+            }
+            for p in ALL_PARAMS
+        }
+        for d in days_in_range:
+            for p in ALL_PARAMS:
+                merged[p]["sum"]   += self._days[d][p]["sum"]
+                merged[p]["sum2"]  += self._days[d][p]["sum2"]
+                merged[p]["count"] += self._days[d][p]["count"]
+
+        return merged
+
+    def save(self, filepath: str) -> None:
+        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+
+        ds = xr.Dataset(
+            coords={
+                "lat": ("lat", self.lat_bins,
+                        {"units": "degrees_north", "long_name": "latitude"}),
+                "lon": ("lon", self.lon_bins,
+                        {"units": "degrees_east",  "long_name": "longitude"}),
+            },
+            attrs={
+                "title": "EarthCARE ACM_CLP_2B daily gridded statistics",
+                "dlat": self.dlat,
+                "dlon": self.dlon,
+                "n_days": len(self._days),
+                "n_orbits": self.n_orbits,
+                "date_start": self.dates[0] if self.dates else "",
+                "date_end": self.dates[-1] if self.dates else "",
+                "conventions": "CF-1.8",
+            },
+        )
+
+        for day_str, day_data in sorted(self._days.items()):
+            safe = day_str.replace("-", "")
+            ds[f"n_orbits_{safe}"] = int(day_data["_n_orbits"])
+            for p in ALL_PARAMS:
+                ds[f"{safe}_{p}_sum"]   = (["lat", "lon"], day_data[p]["sum"])
+                ds[f"{safe}_{p}_sum2"]  = (["lat", "lon"], day_data[p]["sum2"])
+                ds[f"{safe}_{p}_count"] = (["lat", "lon"], day_data[p]["count"].astype(float))
+
+        ds.to_netcdf(filepath, mode="w")
+        size_mb = Path(filepath).stat().st_size / 1e6
+        print(f"Sauvegardé {filepath}")
+        print(f"{len(self._days)} jours | {self.n_orbits} orbites | {size_mb:.1f} MB")
+        if self.dates:
+            print(f"Période : {self.dates[0]} {self.dates[-1]}")
+
+    @classmethod
+    def load(cls, filepath: str) -> "GridAccumulator":
+        ds = xr.open_dataset(filepath)
+
+        g = cls.__new__(cls)
+        g.dlat = float(ds.attrs["dlat"])
+        g.dlon = float(ds.attrs["dlon"])
+        g.lat_bins = ds["lat"].values
+        g.lon_bins = ds["lon"].values
+        g.n_lat = len(g.lat_bins)
+        g.n_lon = len(g.lon_bins)
+        g._days = {}
+
+        day_keys = [k[9:] for k in ds.data_vars if k.startswith("n_orbits_")]
+
+        for safe in sorted(day_keys):
+            day_str = f"{safe[:4]}-{safe[4:6]}-{safe[6:]}"
+            day_data = {"_n_orbits": int(ds[f"n_orbits_{safe}"].values)}
+            for p in ALL_PARAMS:
+                day_data[p] = {
+                    "sum":   ds[f"{safe}_{p}_sum"].values.copy(),
+                    "sum2":  ds[f"{safe}_{p}_sum2"].values.copy(),
+                    "count": ds[f"{safe}_{p}_count"].values.astype(np.int32).copy(),
+                }
+            g._days[day_str] = day_data
+
+        ds.close()
+        print(f"Charge : {filepath}")
+        if g.dates:
+            print(f"{len(g._days)} jours | {g.n_orbits} orbites | "
+                  f"{g.dates[0]} to {g.dates[-1]}")
+        return g
+
+    def __repr__(self):
+        period = f"{self.dates[0]} to {self.dates[-1]}" if self.dates else "vide"
+        return (
+            f"GridAccumulator("
+            f"dlat={self.dlat}°, dlon={self.dlon}°, "
+            f"{self.n_lat}×{self.n_lon} cells, "
+            f"{len(self._days)} jours, "
+            f"{self.n_orbits} orbites, "
+            f"{period})"
+        )
+
+
+def _add_at(param_dict: dict, i_lat, i_lon, values) -> None:
+    valid = ~np.isnan(values)
+    if not np.any(valid):
+        return
+    v  = values[valid]
+    il = i_lat[valid]
+    jl = i_lon[valid]
+    np.add.at(param_dict["sum"],   (il, jl), v)
+    np.add.at(param_dict["sum2"],  (il, jl), v ** 2)
+    np.add.at(param_dict["count"], (il, jl), 1)
+
+
+def _compute_mean(day_data: dict) -> dict:
+    result = {}
+    for p in ALL_PARAMS:
+        n = day_data[p]["count"].astype(float)
+        s = day_data[p]["sum"]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            result[p] = np.where(n > 0, s / n, np.nan)
+    return result
+
+
+def _compute_std(day_data: dict) -> dict:
+    result = {}
+    for p in ALL_PARAMS:
+        n  = day_data[p]["count"].astype(float)
+        s  = day_data[p]["sum"]
+        s2 = day_data[p]["sum2"]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            var = np.where(
+                n >= 2,
+                (s2 - s ** 2 / n) / (n - 1),
+                np.nan,
+            )
+            result[p] = np.sqrt(np.maximum(var, 0.0))
+    return result
