@@ -295,13 +295,14 @@ def plot_probability_density_trio(grid, param_x: str = "slwp", param_y: str = "t
         ylabel = param_y.replace("_", " ").capitalize()
 
         # Tout
-plot_probability_density(grid, mask_type="all", d1="2025-12-01", d2="2025-12-31")
+# Terre uniquement, seuil à 2000 m
+plot_probability_density_trio(grid, mask_type="land", elev_threshold=2000,
+                               d1="2025-12-01", d2="2025-12-31")
 
-# Terre, nuages SLW au-dessus de 3000 m
-plot_probability_density(grid, mask_type="land", cloud_alt_min=3000, d1="2025-12-01", d2="2025-12-31")
+# Océan uniquement, seuil à 0 m
+plot_probability_density_trio(grid, mask_type="ocean", elev_threshold=0,
+                               d1="2025-12-01", d2="2025-12-31")
 
-# Océan, nuages SLW en dessous de 2000 m
-plot_probability_density(grid, mask_type="ocean", cloud_alt_max=2000, d1="2025-12-01", d2="2025-12-31")
-
-# Terre, nuages entre 1000 et 4000 m
-plot_probability_density(grid, mask_type="land", cloud_alt_min=1000, cloud_alt_max=4000, d1="2025-12-01", d2="2025-12-31")
+# Tout, seuil à 1000 m
+plot_probability_density_trio(grid, mask_type="all", elev_threshold=1000,
+                               d1="2025-12-01", d2="2025-12-31")
