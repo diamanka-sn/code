@@ -73,7 +73,27 @@ def plot_cloud_height_distribution(grid, day=None, d1=None, d2=None,
 
     return height
 
-# Tout
+
+# Figure
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.patch.set_facecolor("white")
+
+ax.plot(centers, counts, 'b-', linewidth=2)
+
+ax.axvline(np.mean(height),   color='r', linewidth=1.5,
+           linestyle='--', label=f'Mean : {np.mean(height):.0f} m')
+ax.axvline(np.median(height), color='g', linewidth=1.5,
+           linestyle='--', label=f'Median : {np.median(height):.0f} m')
+
+ax.set_xlabel("Height above surface (m)", fontsize=11)
+ax.set_ylabel("Count", fontsize=11)
+ax.set_xlim(xlim)
+ax.set_ylim(bottom=0)
+ax.tick_params(top=True, right=True, which="both", direction="in")
+ax.spines["right"].set_visible(True)
+ax.spines["top"].set_visible(True)
+ax.legend(fontsize=9)
+
 plot_cloud_height_distribution(grid, mask_type="all", d1="2025-12-01", d2="2025-12-31")
 
 # Terre uniquement
