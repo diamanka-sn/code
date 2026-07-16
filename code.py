@@ -797,3 +797,280 @@ def _compute_std(day_data: dict) -> dict:
             )
             result[p] = np.sqrt(np.maximum(var, 0.0))
     return result
+
+
+def plot_cloud_height_distribution(grid, day=None, d1=None, d2=None,
+                                    bins=50,
+                                    xlim=(0, 5000),
+                                    mask_type: str = "all",
+                                    title=None):
+
+    means, _, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
+
+    cloud_level = means["cloud_level_slwc"]
+    surface_elevation = means["surface_elevation"]
+    flag = means["land_water_flag"]
+
+    if mask_type == "land":
+        spatial_mask = np.round(flag) == 1
+    elif mask_type == "ocean":
+        spatial_mask = np.round(flag) == 0
+    else:
+        spatial_mask = np.ones(cloud_level.shape, dtype=bool)
+
+    height = cloud_level - surface_elevation
+
+    valid = spatial_mask & np.isfinite(height) & (height >= 0)
+    height = height[valid].ravel()
+
+    if len(height) == 0:
+        raise ValueError("Aucune valeur valide.")
+
+    counts, edges = np.histogram(height, bins=bins, range=xlim)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+
+    mask_label = {"all": "Land and Ocean", "land": "Land",
+                  "ocean": "Ocean"}.get(mask_type, mask_type)
+
+    # Figure — height en Y, count en X
+    fig, ax = plt.subplots(figsize=(6, 8))
+    fig.patch.set_facecolor("white")
+
+    ax.plot(counts, centers, 'r-', linewidth=2)
+
+    ax.set_xlabel("Count", fontsize=11)
+    ax.set_ylabel("Height agl (m)", fontsize=11)
+    ax.set_ylim(xlim)
+    ax.set_xlim(left=0)
+    ax.tick_params(top=True, right=True, which="both", direction="in")
+    ax.spines["right"].set_visible(True)
+    ax.spines["top"].set_visible(True)
+    ax.set_title(title or f"SLW Cloud Height Above Ground Level\n"
+                          f"{n_orbits} orbits | {mask_label} | {label}",
+                 fontsize=11, fontweight=TITLE_WEIGHT, color=TITLE_COLOR)
+
+    plt.tight_layout()
+    plt.show()
+
+    return height
+
+def plot_land_water_flag(grid, day=None, d1=None, d2=None):
+
+    means, _, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
+    LON2D, LAT2D = np.meshgrid(grid.lon_bins, grid.lat_bins)
+    proj  = ccrs.SouthPolarStereo()
+    theta = np.linspace(0, 2 * np.pi, 100)
+    verts = np.vstack([np.sin(theta), np.cos(theta)]).T
+    circle = mpath.Path(verts * 0.5 + [0.5, 0.5])
+
+    data = means["land_water_flag"]
+
+    # Colormap discret : 0=ocean (bleu), 1=terre (vert)
+    cmap  = mcolors.ListedColormap(["steelblue", "forestgreen"])
+    norm  = mcolors.BoundaryNorm([0, 0.5, 1], cmap.N)
+
+    fig, ax = plt.subplots(figsize=(8, 8),
+                            subplot_kw={"projection": proj})
+    fig.patch.set_facecolor("white")
+    ax.set_extent([-180, 180, -90, -60], ccrs.PlateCarree())
+    ax.add_feature(cfeature.COASTLINE)
+    ax.set_boundary(circle, transform=ax.transAxes)
+    ax.gridlines(draw_labels=True, dms=False, x_inline=False,
+                 y_inline=True, alpha=0.3,
+                 ylocs=np.arange(-90, -55, 10))
+
+    pc = ax.pcolormesh(LON2D, LAT2D, np.round(data),
+                       cmap=cmap, norm=norm,
+                       transform=ccrs.PlateCarree(), shading="auto")
+
+    cbar = plt.colorbar(pc, ax=ax, orientation="horizontal",
+                        shrink=0.8, pad=0.08,
+                        ticks=[0.25, 0.75])
+    cbar.set_ticklabels(["Ocean (0)", "Land (1)"])
+    cbar.set_label("Land / Water flag", fontsize=10)
+
+    ax.set_title(f"Land / Water Flag\n{n_orbits} orbits | grid {grid.dlat}°×{grid.dlon}° | {label}",
+                 fontsize=11, fontweight=TITLE_WEIGHT, color=TITLE_COLOR)
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_probability_density_trio(grid, param_x: str = "slwp", param_y: str = "temperature_slwc",
+                                   day=None, d1=None, d2=None,
+                                   bins_x=50, bins_y=50,
+                                   xlim=(0, 20), ylim=(-40, 0),
+                                   area_weighted=True, normalize=True,
+                                   vmin=None, vmax=None, cmap="rainbow",
+                                   log_density=False, mask_type: str = "all",
+                                   elev_threshold_low: float = 1000,
+                                   elev_threshold_high: float = 3000,
+                                   # Seuils spécifiques land/ocean pour le mode "all"
+                                   elev_land_low: float = 0,
+                                   elev_land_high: float = 3800,
+                                   elev_ocean_low: float = 0,
+                                   elev_ocean_high: float = 5000,
+                                   xlabel=None, ylabel=None):
+
+    means, _, n_orbits, label = _resolve_grid_range(grid, day, d1, d2)
+    for p in (param_x, param_y):
+        if p not in means:
+            raise KeyError(f"Paramètre '{p}' absent. Disponibles : {list(means)}")
+
+    data_x = means[param_x]
+    data_y = means[param_y]
+    elev   = means["surface_elevation"]
+    flag   = means["land_water_flag"]
+
+    lon_bins = np.asarray(grid.lon_bins)
+    lat_bins = np.asarray(grid.lat_bins)
+    lon_c = 0.5 * (lon_bins[:-1] + lon_bins[1:]) if len(lon_bins) == data_x.shape[1] + 1 else lon_bins
+    lat_c = 0.5 * (lat_bins[:-1] + lat_bins[1:]) if len(lat_bins) == data_x.shape[0] + 1 else lat_bins
+    LAT2D = np.meshgrid(lon_c, lat_c)[1]
+
+    dlat = getattr(grid, "dlat", np.median(np.diff(lat_c)))
+    dlon = getattr(grid, "dlon", np.median(np.diff(lon_c)))
+    cell_area = np.cos(np.deg2rad(LAT2D)) * np.deg2rad(dlat) * np.deg2rad(dlon)
+
+    # --- Masques de base ---
+    land_mask  = flag >= 0.5   # dominant terre
+    ocean_mask = flag <  0.5   # dominant océan
+
+    if mask_type == "land":
+        spatial_mask = land_mask
+    elif mask_type == "ocean":
+        spatial_mask = ocean_mask
+    else:  # "all"
+        spatial_mask = np.ones(data_x.shape, dtype=bool)
+
+    base_valid = spatial_mask & np.isfinite(data_x) & np.isfinite(data_y)
+
+    # --- Construction des 3 masques selon mask_type ---
+    if mask_type == "all":
+        # Panneau (a) : tout land + ocean avec leurs seuils respectifs
+        mask_all = (
+            base_valid & (
+                (land_mask  & (elev >= elev_land_low)  & (elev < elev_land_high)) |
+                (ocean_mask & (elev >= elev_ocean_low) & (elev < elev_ocean_high))
+            )
+        )
+        # Panneau (b) : land < seuil haut land + ocean < seuil haut ocean
+        mask_low = (
+            base_valid & (
+                (land_mask  & (elev < elev_land_low)) |
+                (ocean_mask & (elev < elev_ocean_low))
+            )
+        )
+        # Panneau (c) : land >= seuil haut + ocean >= seuil haut
+        mask_high = (
+            base_valid & (
+                (land_mask  & (elev >= elev_land_high)) |
+                (ocean_mask & (elev >= elev_ocean_high))
+            )
+        )
+        masks = [
+            (mask_all,
+             f"All | land elev < {elev_land_high} m & ocean elev < {elev_ocean_high} m"),
+            (mask_low,
+             f"Land elev < {elev_land_low} m & Ocean elev < {elev_ocean_low} m"),
+            (mask_high,
+             f"Land elev ≥ {elev_land_high} m & Ocean elev ≥ {elev_ocean_high} m"),
+        ]
+
+    else:
+        # Mode land ou ocean uniquement — seuils simples
+        masks = [
+            (base_valid,
+             f"All elevations"),
+            (base_valid & (elev < elev_threshold_low),
+             f"Surface elevation < {elev_threshold_low} m"),
+            (base_valid & (elev >= elev_threshold_high),
+             f"Surface elevation ≥ {elev_threshold_high} m"),
+        ]
+
+    # --- Labels ---
+    if ylabel is None:
+        if "temperature_slwc" in param_y:
+            ylabel = "In-Cloud SLW Temperature (°C)"
+        elif "temperature" in param_y:
+            ylabel = "Temperature (°C)"
+        elif "elevation" in param_y:
+            ylabel = "Elevation (m)"
+        else:
+            ylabel = param_y.replace("_", " ").capitalize()
+
+    if xlabel is None:
+        if "slwp" in param_x or "lwp" in param_x:
+            xlabel = f"{param_x.upper()} ($g/m²$)"
+        elif "lwc" in param_x:
+            xlabel = f"{param_x.upper()} ($g/m³$)"
+        else:
+            xlabel = param_x.upper()
+
+    mask_label = {"all": "Land and Ocean", "land": "Land",
+                  "ocean": "Ocean"}.get(mask_type, mask_type)
+
+    # --- Figure ---
+    fig, axes = plt.subplots(1, 3, figsize=(22, 8), sharey=True,
+                              gridspec_kw={"wspace": 0.05})
+    fig.patch.set_facecolor("white")
+    fig.suptitle(f"{param_x.upper()} vs In-Cloud SLW Temperature | {mask_label}\n"
+                 f"{n_orbits} orbits | grid {dlat}°×{dlon}° | {label}",
+                 fontsize=13, fontweight=TITLE_WEIGHT, color=TITLE_COLOR)
+
+    panel_labels = ["(a)", "(b)", "(c)"]
+
+    for ax, (valid, panel_title), plabel in zip(axes, masks, panel_labels):
+
+        x = data_x[valid].ravel()
+        y = data_y[valid].ravel()
+        w = cell_area[valid].ravel() if area_weighted else None
+
+        if x.size == 0:
+            ax.set_title(f"{plabel} {panel_title}\nNo data", fontsize=10)
+            continue
+
+        print(f"{plabel} {panel_title} → N={x.size}")
+
+        # Histogramme 2D
+        y_range    = ylim if ylim is not None else [y.min(), y.max()]
+        hist_range = [xlim, y_range]
+        H, xedges, yedges = np.histogram2d(x, y, bins=[bins_x, bins_y],
+                                            range=hist_range, weights=w)
+        if H.sum() > 0:
+            H = H / H.sum() * 100
+        H_plot = np.where(H.T > 0, H.T, np.nan)
+
+        cmap_obj = plt.get_cmap(cmap)
+        lo = vmin if vmin is not None else 0
+        hi = vmax if vmax is not None else np.nanmax(H_plot)
+
+        if log_density:
+            norm = mcolors.LogNorm(vmin=vmin or 1e-3, vmax=vmax or hi)
+        else:
+            norm = mcolors.Normalize(vmin=lo, vmax=hi)
+
+        pc = ax.pcolormesh(xedges, yedges, H_plot, cmap=cmap_obj,
+                           norm=norm, shading="auto")
+        cbar = plt.colorbar(pc, ax=ax, orientation="horizontal",
+                            fraction=0.05, pad=0.08)
+        cbar.set_label("Probability density (%)", fontsize=9)
+
+        ax.set_xlabel(xlabel, fontsize=11)
+        if ax is axes[0]:
+            ax.set_ylabel(ylabel, fontsize=11)
+
+        if xlim is not None:
+            ax.set_xlim(xlim)
+        if ylim is not None:
+            ax.set_ylim(ylim)
+
+        ax.tick_params(top=True, right=True, which="both", direction="in")
+        ax.spines["right"].set_visible(True)
+        ax.spines["top"].set_visible(True)
+        ax.set_title(f"{plabel} {panel_title}", fontsize=11,
+                     fontweight=TITLE_WEIGHT, color=TITLE_COLOR)
+
+        _add_ricaud_curve(ax)
+
+    plt.tight_layout()
+    plt.show()
