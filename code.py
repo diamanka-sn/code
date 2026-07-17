@@ -1074,3 +1074,48 @@ def plot_probability_density_trio(grid, param_x: str = "slwp", param_y: str = "t
 
     plt.tight_layout()
     plt.show()
+
+def plot_quality_flag(orbites: list[dict]) -> None:
+
+    counts = Counter(str(orb.get("quality_flag", "UNKNOWN")).strip().upper() for orb in orbites)
+
+    # Print les orbites NG
+    ng_orbites = [orb.get("nom_orbite", orb.get("orbit_id", "unknown"))
+                  for orb in orbites
+                  if str(orb.get("quality_flag", "")).strip().upper() == "NG"]
+    if ng_orbites:
+        print(f"\n{len(ng_orbites)} orbite(s) NG :")
+        for nom in ng_orbites:
+            print(f"  → {nom}")
+    else:
+        print("Aucune orbite NG.")
+
+    labels = [f for f in FLAG_ORDER if counts.get(f, 0) > 0]
+    extras = sorted(k for k in counts if k not in FLAG_ORDER)
+    labels += extras
+
+    values = [counts[l] for l in labels]
+    colors = [FLAG_COLORS.get(l, "#95a5a6") for l in labels]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    fig.patch.set_facecolor("white")
+
+    bars = ax.bar(labels, values, color=colors, edgecolor="white", linewidth=1.2, width=0.5)
+
+    total = sum(values)
+    for bar, val in zip(bars, values):
+        pct = 100.0 * val / total if total else 0
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                f"{val}\n({pct:.1f} %)", ha="center", va="bottom",
+                fontsize=10, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
+
+    ax.set_ylabel("Number of orbits", fontsize=11, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
+    ax.set_xlabel("Quality flag", fontsize=11, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
+    ax.set_title("Orbit quality flag", fontsize=13, color=TITLE_COLOR, fontweight=TITLE_WEIGHT)
+    ax.set_ylim(0, max(values) * 1.25)
+    ax.spines[["top", "right"]].set_visible(True)
+    ax.tick_params(axis="both", labelsize=11)
+    ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
+
+    plt.tight_layout()
+    plt.show()
